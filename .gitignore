@@ -1,0 +1,56 @@
+# =========================
+# Secrets & Environments
+# =========================
+# VERGEET DEZE NIET! Bevat wachtwoorden, API keys en database strings.
+.env
+.env.local
+.env.*
+
+# Virtuele omgevingen (indien je deze lokaal gebruikt)
+venv/
+.venv/
+env/
+
+# =========================
+# Python & Bytecode
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# =========================
+# Databases & Logs
+# =========================
+*.db
+*.sqlite3
+*.log
+
+# =========================
+# Testing & Coverage
+# =========================
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# =========================
+# OS & IDE specifieke bestanden
+# =========================
+# Mac
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+
+# IDE's (VS Code, PyCharm, etc.)
+.vscode/
+.idea/
+*.swp
+*.swo
+
+seed.py
