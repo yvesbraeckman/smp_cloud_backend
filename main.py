@@ -6,6 +6,7 @@ Hier configureren we de API, koppelen we de database, en laden we alle
 verschillende modules (routers) in.
 """
 
+import os
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -18,7 +19,10 @@ from mqtt.client import start_mqtt, stop_mqtt
 from mqtt.handlers import send_delivery_email
 
 # 1. Creëer de database tabellen als ze nog niet bestaan
-Base.metadata.create_all(bind=engine)
+# Skip table creation during imports (e.g., for testing)
+IN_TEST_MODE = os.getenv("IN_TEST_MODE", "false").lower() == "true"
+if not IN_TEST_MODE:
+    Base.metadata.create_all(bind=engine)
 
 
 # 2. De Lifespan (Startup & Shutdown logica)

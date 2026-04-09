@@ -23,6 +23,7 @@ import qrcode
 from io import BytesIO
 from email.mime.image import MIMEImage
 
+
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def parse_mqtt_timestamp(ts_string: str | None) -> datetime:
@@ -37,6 +38,54 @@ def parse_mqtt_timestamp(ts_string: str | None) -> datetime:
 # ==========================================
 # HELPER: E-MAIL VERZENDEN
 # ==========================================
+
+def send_return_email(recipient_email: str, recipient_name: str, barcode: str, carrier: str):
+    """
+    Stuurt een HTML e-mail ter bevestiging van een retourzending.
+    """
+    SENDER_EMAIL = os.getenv("SENDER_EMAIL")
+    SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
+    SMTP_SERVER = os.getenv("SMTP_SERVER")
+    SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+    
+    if not SENDER_EMAIL or not SENDER_PASSWORD:
+        print("[EMAIL ERROR] E-mail instellingen ontbreken in .env!")
+        return
+
+    msg = MIMEMultipart('alternative')
+    msg['From'] = f"Smart Parcel Wall <{SENDER_EMAIL}>"
+    msg['To'] = recipient_email
+    msg['Subject'] = f"Je retour via {carrier} is geregistreerd"
+    
+    html_body = f"""
+    <html>
+      <body style="font-family: -apple-system, sans-serif; color: #1d1d1f; line-height: 1.6;">
+        <h2>Beste {recipient_name},</h2>
+        <p>Je retourpakket is succesvol veiliggesteld in de Smart Parcel Wall.</p>
+        
+        <div style="background-color: #f5f5f7; padding: 20px; border-radius: 12px; margin: 20px 0; max-width: 400px;">
+            <p style="margin: 0 0 10px 0;"><strong>Vervoerder:</strong> {carrier}</p>
+            <p style="margin: 0;"><strong>Tracking/Referentie:</strong> {barcode}</p>
+        </div>
+
+        <p>De koerier pikt het pakket zo snel mogelijk op. Je hoeft verder niets te doen!</p>
+        <p style="color: #86868b; font-size: 14px; margin-top: 30px;">Met vriendelijke groet,<br>Het Smart Parcel Wall Systeem</p>
+      </body>
+    </html>
+    """
+    
+    msg.attach(MIMEText(html_body, 'html'))
+    
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            server.login("resend", SENDER_PASSWORD)
+            server.send_message(msg)
+        print(f"[EMAIL INFO] Succesvol retour e-mail verstuurd naar {recipient_email}")
+    except Exception as e:
+        print(f"[EMAIL ERROR] Fout bij verzenden van e-mail naar {recipient_email}: {e}")
+
+
 def send_delivery_email(recipient_email: str, recipient_name: str, raw_pin: str, barcode: str, carrier: str):
     """
     Stuurt een HTML e-mail naar de bewoner met de afhaal-PIN en een ingesloten QR-code.
@@ -44,7 +93,7 @@ def send_delivery_email(recipient_email: str, recipient_name: str, raw_pin: str,
     SENDER_EMAIL = os.getenv("SENDER_EMAIL")
     SENDER_PASSWORD = os.getenv("SENDER_PASSWORD")
     SMTP_SERVER = os.getenv("SMTP_SERVER")
-    SMTP_PORT = int(os.getenv("SMTP_PORT"))
+    SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
     
     if not SENDER_EMAIL or not SENDER_PASSWORD:
         print("[EMAIL ERROR] E-mail instellingen ontbreken in .env!")
@@ -113,12 +162,10 @@ def send_delivery_email(recipient_email: str, recipient_name: str, raw_pin: str,
     except Exception as e:
         print(f"[EMAIL ERROR] Fout bij verzenden van e-mail naar {recipient_email}: {e}")
 
+
 # ==========================================
 # EVENT HANDLERS
 # ==========================================
-import json
-import random
-# Zorg dat pwd_context en parse_mqtt_timestamp hierboven ergens geïmporteerd/gedefinieerd zijn!
 
 def handle_delivery(client: mqtt.Client, location_id: str, payload: dict) -> None:
     """
@@ -171,13 +218,33 @@ def handle_delivery(client: mqtt.Client, location_id: str, payload: dict) -> Non
             print(f"[MQTT WARNING] ❓ Bewoner met ID {user_id} niet gevonden in de Cloud DB!")
             
         # 6. Schrijf weg in het Systeem Logboek
+        # Parse the timestamp if provided, otherwise use current UTC time
+        from datetime import datetime as dt_type, timezone
+        import re
+        
+        if event_time:
+            # Try to parse ISO format timestamp string
+            try:
+                # Remove timezone info for SQLite support (SQLite doesn't store timezone)
+                if '+' in str(event_time) or 'Z' in str(event_time):
+                    # Remove timezone suffix
+                    ts_str = re.sub(r'[+-][0-9]{2}:[0-9]{2}$|Z$', '', str(event_time))
+                    timestamp = dt_type.fromisoformat(ts_str)
+                else:
+                    timestamp = dt_type.fromisoformat(str(event_time))
+            except (ValueError, TypeError):
+                # Fallback to current time
+                timestamp = dt_type.now(timezone.utc)
+        else:
+            timestamp = dt_type.now(timezone.utc)
+            
         new_log = models.AuditLog(
             location_id=int(location_id), 
             locker_id=locker_id,
             event_type="LEVERING",
             severity="INFO",
             description=f"Pakket voor bewoner {resident.name if resident else user_id} afgeleverd door {carrier}.",
-            timestamp=event_time
+            timestamp=timestamp
         )
         db.add(new_log)
         
@@ -186,13 +253,30 @@ def handle_delivery(client: mqtt.Client, location_id: str, payload: dict) -> Non
         print(f"[MQTT SUCCESS] Pakket opgeslagen in cloud database.")
         
         # 7. Stuur de GEHASHTE pincode terug naar de muur zodat de bewoner hem kan openen
-        sync_payload = {
-            "valid_codes": [
-                {"hash": hashed_pin, "locker_ids": [locker_id]} 
-            ]
-        }
+        # 7. Haal de VOLLEDIGE whitelist op voor deze muur en stuur die door
+        # We zoeken alle pakketten op deze locatie die de status 'Delivered' hebben
+        all_active_parcels = db.query(models.Parcel).join(models.Locker).filter(
+            models.Locker.location_id == int(location_id),
+            models.Parcel.status == "Delivered"
+        ).all()
+
+        # Groepeer de kluisjes per hash-code
+        valid_codes_dict = {}
+        for p in all_active_parcels:
+            if p.pincode: # Alleen pakketjes met een actieve code
+                if p.pincode not in valid_codes_dict:
+                    valid_codes_dict[p.pincode] = []
+                valid_codes_dict[p.pincode].append(p.locker_id)
+
+        # Maak de lijst voor de Edge
+        valid_codes_list = [
+            {"hash": h, "locker_ids": ids} for h, ids in valid_codes_dict.items()
+        ]
+
+        sync_payload = {"valid_codes": valid_codes_list}
         client.publish(f"lockers/{location_id}/cmd/sync_whitelist", json.dumps(sync_payload), qos=1)
-        print(f"[MQTT PUSH] Pincode hash gestuurd naar de kluiswand.")
+        
+        print(f"[MQTT PUSH] Volledige whitelist ({len(valid_codes_list)} codes) gestuurd naar kluiswand {location_id}.")
         
     except Exception as e:
         print(f"[MQTT FATAL] Fout in handle_delivery: {e}")
@@ -206,7 +290,7 @@ def handle_pickup(client: mqtt.Client, location_id: str, payload: Dict[str, Any]
     Verwerkt de afhaling van een pakket door een bewoner.
     Topic: lockers/{location_id}/events/pickup
     
-    Markeert het pakket als opgehaald, geeft de kluis weer vrij en logt de gebeurtenis.
+    Markeert het pakket als opgehaald, geeft de kluis weer vrij en logt de gebeurtenis inclusief naam.
     """
     locker_id = payload.get("locker_id")
     method = payload.get("method", "onbekend")  # Bv: 'PIN' of 'QR'
@@ -223,17 +307,25 @@ def handle_pickup(client: mqtt.Client, location_id: str, payload: Dict[str, Any]
             models.Parcel.status == "Delivered"
         ).first()
         
+        user_name = "Onbekende bewoner"
+        
         if parcel:
             parcel.status = "PickedUp"
             parcel.picked_up_at = datetime.utcnow()
+            
+            # Zoek de bijbehorende bewoner op via de user_id van het pakket
+            if parcel.user_id:
+                resident = db.query(models.User).filter(models.User.id == parcel.user_id).first()
+                if resident:
+                    user_name = resident.name
         
         # 2. Update de kluis status naar beschikbaar
         locker = db.query(models.Locker).filter(models.Locker.id == locker_id).first()
         if locker:
             locker.status = "Available"
             
-        # 3. Bouw een gedetailleerde log-beschrijving op
-        desc = f"Pakket opgehaald. Authenticatie via {method}."
+        # 3. Bouw een gedetailleerde log-beschrijving op met de naam van de bewoner
+        desc = f"Pakket opgehaald door {user_name}. Authenticatie via {method}."
         if duration:
             desc += f" (Deur stond {duration}s open)"
             
@@ -248,6 +340,9 @@ def handle_pickup(client: mqtt.Client, location_id: str, payload: Dict[str, Any]
         db.add(new_log)
         db.commit()
         
+    except Exception as e:
+        print(f"[MQTT FATAL] Fout in handle_pickup: {e}")
+        db.rollback()
     finally:
         db.close()
 
@@ -281,6 +376,107 @@ def handle_alarm(client: mqtt.Client, location_id: str, payload: Dict[str, Any])
         db.close()
 
 
+def handle_return(client: mqtt.Client, location_id: str, payload: dict) -> None:
+    """
+    Verwerkt een nieuw retourpakket dat door een bewoner in de kluis is gelegd.
+    """
+    locker_id = payload.get("locker_id")
+    barcode = payload.get("barcode", "Onbekend")
+    carrier = payload.get("carrier", "Onbekend")
+    user_id = payload.get("user_id")
+    event_time = parse_mqtt_timestamp(payload.get("timestamp"))
+    
+    db = SessionLocal()
+    try:
+        print(f"[MQTT] Retour ontvangen voor kluis {locker_id}. Barcode: {barcode}")
+
+        # 1. Check of kluis bestaat
+        locker = db.query(models.Locker).filter(models.Locker.id == locker_id).first()
+        if not locker:
+            print(f"[MQTT ERROR] Kluis {locker_id} bestaat niet.")
+            return
+
+        # 2. Maak het pakket aan met status 'AwaitingCourier' (of 'Return')
+        new_parcel = models.Parcel(
+            tracking_code=barcode,
+            locker_id=locker_id,
+            courier=carrier,
+            status="AwaitingCourier", # Speciale status zodat we weten dat de koerier dit nog moet halen
+            user_id=user_id,
+            pincode=None # Geen PIN nodig voor de bewoner
+        )
+        db.add(new_parcel)
+        
+        # 3. Zet kluis op bezet
+        locker.status = "Occupied"
+            
+        # 4. Zoek de bewoner en stuur mail
+        resident = db.query(models.User).filter(models.User.id == user_id).first()
+        if resident:
+            send_return_email(resident.email, resident.name, barcode, carrier)
+            
+        # 5. Schrijf weg in het Systeem Logboek
+        new_log = models.AuditLog(
+            location_id=int(location_id), 
+            locker_id=locker_id,
+            event_type="RETOUR_AANGEMELD",
+            severity="INFO",
+            description=f"Retour voor {carrier} geplaatst door {resident.name if resident else user_id}.",
+            timestamp=event_time
+        )
+        db.add(new_log)
+        
+        db.commit()
+        print(f"[MQTT SUCCESS] Retour succesvol opgeslagen in cloud database.")
+        
+    except Exception as e:
+        print(f"[MQTT FATAL] Fout in handle_return: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def handle_collect(client: mqtt.Client, location_id: str, payload: dict) -> None:
+    """
+    Verwerkt de afhaling van een retourpakket door een koerierdienst.
+    """
+    locker_id = payload.get("locker_id")
+    carrier = payload.get("carrier", "Onbekend")
+    event_time = parse_mqtt_timestamp(payload.get("timestamp"))
+    
+    db = SessionLocal()
+    try:
+        print(f"[MQTT] Koerier {carrier} heeft retour in kluis {locker_id} opgehaald.")
+        
+        # 1. Zoek het retourpakket
+        parcel = db.query(models.Parcel).filter(
+            models.Parcel.locker_id == locker_id,
+            models.Parcel.status == "AwaitingCourier"
+        ).first()
+        
+        if parcel:
+            parcel.status = "PickedUp" # Het pakket is nu definitief weg
+            parcel.picked_up_at = event_time
+        
+        # 2. Zet de kluis weer op beschikbaar voor de volgende!
+        locker = db.query(models.Locker).filter(models.Locker.id == locker_id).first()
+        if locker:
+            locker.status = "Available"
+            
+        # 3. Logboek
+        new_log = models.AuditLog(
+            location_id=int(location_id),
+            locker_id=locker_id,
+            event_type="RETOUR_OPGEHAALD",
+            severity="INFO",
+            description=f"Retourpakket succesvol opgehaald door koerier ({carrier}).",
+            timestamp=event_time
+        )
+        db.add(new_log)
+        db.commit()
+        
+    finally:
+        db.close()
 # ==========================================
 # TELEMETRY HANDLERS (Digital Twin)
 # ==========================================
@@ -288,16 +484,19 @@ def handle_alarm(client: mqtt.Client, location_id: str, payload: Dict[str, Any])
 def handle_telemetry(client: mqtt.Client, location_id: str, payload: Dict[str, Any]) -> None:
     """
     Verwerkt de periodieke hartslag (telemetry) van de kluiswand.
-    Topic: lockers/{location_id}/telemetry
-    
-    Update de 'Digital Twin' (shadow_state) van de kluizen, zodat het dashboard
-    real-time weet of deurtjes fysiek open of dicht zijn, en of de muur online is.
     """
     lockers_state = payload.get("lockers_state", {})
     
     db = SessionLocal()
     try:
-        # Loop door de status van elk individueel deurtje heen
+        now_utc = datetime.now(timezone.utc)
+
+        # 1. NIEUW: Update de muur DIRECT zodat deze online is
+        location = db.query(models.Location).filter(models.Location.id == int(location_id)).first()
+        if location:
+            location.last_heartbeat = now_utc
+            
+        # 2. Update de status van elk individueel deurtje (zoals je al deed)
         for l_id, door_status in lockers_state.items():
             locker = db.query(models.Locker).filter(
                 models.Locker.id == int(l_id),
@@ -305,10 +504,9 @@ def handle_telemetry(client: mqtt.Client, location_id: str, payload: Dict[str, A
             ).first()
             
             if locker:
-                # Update de Digital Twin JSON
                 locker.shadow_state = {
                     "door": door_status, 
-                    "last_seen": str(datetime.utcnow())
+                    "last_seen": str(now_utc)
                 }
                 
         db.commit()
@@ -332,16 +530,17 @@ def handle_request_sync(client: mqtt.Client, location_id: str, payload: Dict[str
             # Zoek of er momenteel een pakket in dit specifieke kluisje ligt
             active_parcel = db.query(models.Parcel).filter(
                 models.Parcel.locker_id == l.id,
-                models.Parcel.status == "Delivered"
+                models.Parcel.status.in_(["Delivered", "AwaitingCourier"]) # Zorg dat retouren hier ook bij staan!            
             ).first()
             
             locker_list.append({
                 "id": l.id, 
                 "size": l.size, 
                 "door_number": l.door_number,
-                "status": l.status, # Stuur ook meteen de status mee (Occupied/Available)
-                # Als er een pakket is, stuur de hash mee. Anders None.
-                "current_code_hash": active_parcel.pincode if active_parcel else None 
+                "status": l.status,
+                "current_code_hash": active_parcel.pincode if active_parcel else None,
+                "carrier": active_parcel.courier if active_parcel else None,        # <--- NIEUW
+                "current_barcode": active_parcel.tracking_code if active_parcel else None # <--- NIEUW
             })
         
         # 3. Combineer alles in één dik sync-pakket
@@ -354,6 +553,7 @@ def handle_request_sync(client: mqtt.Client, location_id: str, payload: Dict[str
         print(f"[MQTT] ⬇ Full sync verstuurd: {len(user_list)} bewoners & {len(locker_list)} kluisjes.")
     finally:
         db.close()
+
 
 def push_user_to_edge(user: models.User):
     """ Verstuurt een enkele gebruiker naar de specifieke kluiswand via MQTT """

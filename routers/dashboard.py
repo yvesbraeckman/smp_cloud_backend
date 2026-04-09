@@ -16,7 +16,13 @@ import schemas
 from database import get_db
 
 # Prefix voor de routes
-router = APIRouter(prefix="/api/dashboard")
+from routers.auth import get_current_user
+
+# Prefix voor alle routes in dit bestand
+router = APIRouter(
+    prefix="/api/dashboard",
+    dependencies=[Depends(get_current_user)]
+)
 
 
 @router.get(

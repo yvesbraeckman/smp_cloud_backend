@@ -15,9 +15,13 @@ from datetime import datetime, timedelta, timezone
 import models
 import schemas
 from database import get_db
+from routers.auth import get_current_user
 
 # Prefix voor alle routes in dit bestand
-router = APIRouter(prefix="/api")
+router = APIRouter(
+    prefix="/api",
+    dependencies=[Depends(get_current_user)]
+)
 
 
 @router.get(
@@ -52,31 +56,18 @@ def get_walls(
         total_lockers = len(lockers)
         occupied_lockers = sum(1 for l in lockers if l.status == "Occupied")
         
-        # Check active alarms (Telt het aantal openstaande CRITICAL logs voor deze muur)
+        # Check active alarms
         alarms = db.query(models.AuditLog).filter(
             models.AuditLog.locker_id.in_([l.id for l in lockers]),
             models.AuditLog.severity == "CRITICAL"
         ).count()
 
-        # Bepaal last_sync en online status op basis van de lockers shadow_state
-        last_sync = None
-        is_online = False
-        
-        for locker in lockers:
-            if locker.shadow_state and "last_seen" in locker.shadow_state:
-                try:
-                    seen_time = datetime.fromisoformat(locker.shadow_state["last_seen"])
-                    # Zorg dat seen_time timezone-aware is voor een correcte vergelijking
-                    if seen_time.tzinfo is None:
-                        seen_time = seen_time.replace(tzinfo=timezone.utc)
-                    if not last_sync or seen_time > last_sync:
-                        last_sync = seen_time
-                except Exception:
-                    pass
-        
-        if last_sync and last_sync > offline_threshold:
-            is_online = True
-
+        # --- NIEUWE LOGICA: Direct de muur status checken ---
+        last_sync = loc.last_heartbeat
+        if last_sync and last_sync.tzinfo is None:
+             last_sync = last_sync.replace(tzinfo=timezone.utc)
+             
+        is_online = last_sync and last_sync > offline_threshold
         wall_status = "ONLINE" if is_online else "OFFLINE"
 
         # Pas status filter toe als deze is meegegeven in de URL (?status=online)
@@ -96,45 +87,34 @@ def get_walls(
     return response_data
 
 
-@router.get(
-    "/walls/{wall_id}", 
-    response_model=schemas.WallDetailResponse,
-    summary="Details kluiswand ophalen",
-    response_description="De volledige configuratie van één kluiswand inclusief alle deurtjes."
-)
+@router.get("/walls/{wall_id}", response_model=schemas.WallDetailResponse)
 def get_wall_detail(wall_id: int, db: Session = Depends(get_db)) -> Any:
-    """
-    Haalt de specifieke grid-layout en status op van één muur.
-    Wordt gebruikt wanneer een beheerder op een Wall Card klikt.
-    """
     loc = db.query(models.Location).filter(models.Location.id == wall_id).first()
     if not loc:
         raise HTTPException(status_code=404, detail="Muur niet gevonden")
 
     lockers = db.query(models.Locker).filter(models.Locker.location_id == wall_id).all()
     
-    # 1. Bereken de ECHTE status en last_sync, net als in het dashboard
-    last_sync = None
-    is_online = False
+    # --- NIEUW: Check voor retouren in bezette kluisjes ---
+    for locker in lockers:
+        if locker.status == "Occupied":
+            parcel = db.query(models.Parcel).filter(
+                models.Parcel.locker_id == locker.id,
+                models.Parcel.status == "AwaitingCourier"
+            ).first()
+            if parcel:
+                locker.status = "Return" # Verander de status puur voor de frontend weergave
+    # ------------------------------------------------------
+    
     offline_threshold = datetime.now(timezone.utc) - timedelta(minutes=5)
     
-    for locker in lockers:
-        if locker.shadow_state and "last_seen" in locker.shadow_state:
-            try:
-                seen_time = datetime.fromisoformat(locker.shadow_state["last_seen"])
-                if seen_time.tzinfo is None:
-                    seen_time = seen_time.replace(tzinfo=timezone.utc)
-                if not last_sync or seen_time > last_sync:
-                    last_sync = seen_time
-            except Exception:
-                pass
-    
-    if last_sync and last_sync > offline_threshold:
-        is_online = True
-        
+    last_sync = loc.last_heartbeat
+    if last_sync and last_sync.tzinfo is None:
+         last_sync = last_sync.replace(tzinfo=timezone.utc)
+         
+    is_online = last_sync and last_sync > offline_threshold
     wall_status = "ONLINE" if is_online else "OFFLINE"
 
-    # 2. Stuur de berekende data terug
     return {
         "location_id": loc.id,
         "name": loc.name,
@@ -163,7 +143,7 @@ def get_locker_detail(locker_id: int, db: Session = Depends(get_db)) -> Any:
     # Zoek of er een actief pakket in ligt
     parcel = db.query(models.Parcel).filter(
         models.Parcel.locker_id == locker_id,
-        models.Parcel.status == "Delivered"
+        models.Parcel.status.in_(["Delivered", "AwaitingCourier"]) # <--- GE-UPDATE REGEL
     ).first()
 
     response = {

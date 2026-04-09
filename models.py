@@ -5,8 +5,7 @@ Dit bestand bevat de SQLAlchemy ORM modellen.
 Elke class representeert een tabel in de PostgreSQL database.
 """
 
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, func
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, func, JSON
 from sqlalchemy.orm import relationship
 from database import Base
 
@@ -26,6 +25,7 @@ class Location(Base):
     # Cascade zorgt ervoor dat als een Location wordt verwijderd, de bijbehorende kluisjes en gebruikers ook verdwijnen.
     lockers = relationship("Locker", back_populates="location", cascade="all, delete-orphan")
     users = relationship("User", back_populates="location", cascade="all, delete-orphan")
+    last_heartbeat = Column(DateTime(timezone=True), nullable=True)
 
 
 class Locker(Base):
@@ -39,7 +39,7 @@ class Locker(Base):
     location_id = Column(Integer, ForeignKey("locations.id"), doc="Verwijst naar de fysieke muur (Location.id).")
     door_number = Column(Integer, nullable=False, doc="De hardware pin/id op de Edge Node (bv. pin 1 voor deurtje 1).")
     size = Column(String, doc="Het formaat van het kluisje. Mogelijke waarden: 'S', 'M', 'L'.")
-    shadow_state = Column(JSONB, doc="Digital Twin data gesynchroniseerd via MQTT: bevat zaken als {'door': 'closed', 'last_seen': '...'} .")
+    shadow_state = Column(JSON, doc="Digital Twin data gesynchroniseerd via MQTT: bevat zaken als {'door': 'closed', 'last_seen': '...'} .")
     status = Column(String, default="Available", doc="De logische status. Mogelijke waarden: 'Available', 'Occupied', 'Maintenance', 'Error'.")
 
     # Relaties

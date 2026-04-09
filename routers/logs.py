@@ -20,8 +20,13 @@ import models
 import schemas
 from database import get_db
 
+from routers.auth import get_current_user
+
 # Prefix voor alle log-routes
-router = APIRouter(prefix="/api/logs")
+router = APIRouter(
+    prefix="/api/logs",
+    dependencies=[Depends(get_current_user)]
+)
 
 # ==========================================
 # LOKALE SCHEMA'S

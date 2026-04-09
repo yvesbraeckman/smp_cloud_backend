@@ -18,7 +18,13 @@ from database import get_db
 from mqtt.client import client as mqtt_client  # Importeer de actieve MQTT client
 
 # Prefix voor de routes 
-router = APIRouter(prefix="/api/maintenance")
+from routers.auth import get_current_user
+
+# Prefix voor alle routes in dit bestand
+router = APIRouter(
+    prefix="/api/maintenance",
+    dependencies=[Depends(get_current_user)]
+)
 
 
 @router.post(

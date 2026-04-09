@@ -21,7 +21,9 @@ from mqtt.handlers import (
     handle_alarm, 
     handle_telemetry,
     handle_request_sync,
-    push_user_to_edge
+    push_user_to_edge,
+    handle_return,
+    handle_collect
 )
 
 # ==========================================
@@ -80,16 +82,17 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
                     handle_delivery(client, location_id, payload)
                 elif event_type == "pickup":
                     handle_pickup(client, location_id, payload)
+                elif event_type == "return":  # <--- NIEUW: De retour-router
+                    print("[MQTT DEBUG] Ik ga nu handle_return aanroepen!")
+                    handle_return(client, location_id, payload)
+                elif event_type == "collect": # <--- NIEUW
+                    print("[MQTT DEBUG] Ik ga nu handle_collect aanroepen!")
+                    handle_collect(client, location_id, payload)
                 elif event_type == "alarm":
                     print("[MQTT DEBUG] Ik ga nu handle_alarm aanroepen!")
                     handle_alarm(client, location_id, payload)
-                    
-                # --- NIEUW: Hier vangen we het verzoek van de opstartende Raspberry Pi op! ---
                 elif event_type == "request_sync":
-                    print("[MQTT DEBUG] Ik ga nu handle_request_sync aanroepen!")
                     handle_request_sync(client, location_id, payload)
-                # -----------------------------------------------------------------------------
-                
                 else:
                     print(f"[MQTT WARNING] Onbekend event type: {event_type}")
             

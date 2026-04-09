@@ -19,7 +19,10 @@ import schemas
 from routers.auth import get_current_user, pwd_context 
 
 # Prefix voor alle routes in dit bestand
-router = APIRouter(prefix="/api/admins")
+router = APIRouter(
+    prefix="/api/admins",
+    dependencies=[Depends(get_current_user)]
+)
 
 
 @router.get(

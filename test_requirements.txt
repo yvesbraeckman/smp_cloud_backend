@@ -1,0 +1,25 @@
+"""
+Test Requirements
+=================
+All testing-related dependencies for Smart Parcel Wall backend.
+"""
+
+# Core test framework
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.0.0
+
+# HTTP testing
+httpx>=0.24.0
+
+# Linting and type checking
+pylint>=2.17.0
+mypy>=1.0.0
+types-pyyaml>=6.0.0
+
+# Additional testing utilities
+freezegun>=1.0.0  # Time mocking
+responses>=0.23.0  # HTTP mocking
+
+# Debugging
+pytest-debugger>=0.1.0
