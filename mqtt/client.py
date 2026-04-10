@@ -23,7 +23,8 @@ from mqtt.handlers import (
     handle_request_sync,
     push_user_to_edge,
     handle_return,
-    handle_collect
+    handle_collect,
+    handle_flush_complete
 )
 
 # ==========================================
@@ -93,6 +94,9 @@ def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> Non
                     handle_alarm(client, location_id, payload)
                 elif event_type == "request_sync":
                     handle_request_sync(client, location_id, payload)
+                elif event_type == "flush_complete": # <--- NIEUW: Vangt de marker op
+                    print("[MQTT DEBUG] Offline buffer is leeg, ACK sturen!")
+                    handle_flush_complete(client, location_id, payload)
                 else:
                     print(f"[MQTT WARNING] Onbekend event type: {event_type}")
             

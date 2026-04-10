@@ -187,8 +187,21 @@ def handle_delivery(client: mqtt.Client, location_id: str, payload: dict) -> Non
         locker = db.query(models.Locker).filter(models.Locker.id == locker_id).first()
         if not locker:
             print(f"[MQTT ERROR] 🚨 Kluis {locker_id} bestaat niet in de cloud database! Maak deze eerst aan.")
-            return # We stoppen hier, anders crasht PostgreSQL weer op de Foreign Key!
+            return
 
+        # ==========================================
+        # NIEUW: IDEMPOTENTIE CHECK (Voorkom dubbele mails)
+        # ==========================================
+        existing_parcel = db.query(models.Parcel).filter(
+            models.Parcel.locker_id == locker_id,
+            models.Parcel.tracking_code == barcode,
+            models.Parcel.status == "Delivered"
+        ).first()
+
+        if existing_parcel:
+            print(f"[MQTT] ⚠️ Duplicaat event genegeerd: Pakket {barcode} ligt al in kluis {locker_id}.")
+            return
+        # ==========================================
         # 2. Genereer een ruwe PIN en hash deze
         raw_pin = str(random.randint(100000, 999999))
         hashed_pin = pwd_context.hash(raw_pin)
@@ -318,6 +331,12 @@ def handle_pickup(client: mqtt.Client, location_id: str, payload: Dict[str, Any]
                 resident = db.query(models.User).filter(models.User.id == parcel.user_id).first()
                 if resident:
                     user_name = resident.name
+        # ==========================================
+        # NIEUW: Breek af als het pakket al is opgehaald!
+        # ==========================================
+        else:
+            print(f"[MQTT] ⚠️ Duplicaat pickup event genegeerd voor kluis {locker_id}. Pakket is al weg.")
+        # ==========================================
         
         # 2. Update de kluis status naar beschikbaar
         locker = db.query(models.Locker).filter(models.Locker.id == locker_id).first()
@@ -325,19 +344,20 @@ def handle_pickup(client: mqtt.Client, location_id: str, payload: Dict[str, Any]
             locker.status = "Available"
             
         # 3. Bouw een gedetailleerde log-beschrijving op met de naam van de bewoner
-        desc = f"Pakket opgehaald door {user_name}. Authenticatie via {method}."
-        if duration:
-            desc += f" (Deur stond {duration}s open)"
-            
-        new_log = models.AuditLog(
-            location_id=int(location_id),
-            locker_id=locker_id,
-            event_type="OPHALING",
-            severity="INFO",
-            description=desc,
-            timestamp=event_time
-        )
-        db.add(new_log)
+        if parcel:
+            desc = f"Pakket opgehaald door {user_name}. Authenticatie via {method}."
+            if duration:
+                desc += f" (Deur stond {duration}s open)"
+                
+            new_log = models.AuditLog(
+                location_id=int(location_id),
+                locker_id=locker_id,
+                event_type="OPHALING",
+                severity="INFO",
+                description=desc,
+                timestamp=event_time
+            )
+            db.add(new_log)
         db.commit()
         
     except Exception as e:
@@ -396,6 +416,20 @@ def handle_return(client: mqtt.Client, location_id: str, payload: dict) -> None:
             print(f"[MQTT ERROR] Kluis {locker_id} bestaat niet.")
             return
 
+        # ==========================================
+        # NIEUW: IDEMPOTENTIE CHECK (Voorkom dubbele mails)
+        # ==========================================
+        existing_return = db.query(models.Parcel).filter(
+            models.Parcel.locker_id == locker_id,
+            models.Parcel.tracking_code == barcode,
+            models.Parcel.status == "AwaitingCourier"
+        ).first()
+
+        if existing_return:
+            print(f"[MQTT] ⚠️ Duplicaat event genegeerd: Retour {barcode} wacht al in kluis {locker_id}.")
+            return
+        # ==========================================
+
         # 2. Maak het pakket aan met status 'AwaitingCourier' (of 'Return')
         new_parcel = models.Parcel(
             tracking_code=barcode,
@@ -408,7 +442,7 @@ def handle_return(client: mqtt.Client, location_id: str, payload: dict) -> None:
         db.add(new_parcel)
         
         # 3. Zet kluis op bezet
-        locker.status = "Occupied"
+        locker.status = "Return"
             
         # 4. Zoek de bewoner en stuur mail
         resident = db.query(models.User).filter(models.User.id == user_id).first()
@@ -457,6 +491,12 @@ def handle_collect(client: mqtt.Client, location_id: str, payload: dict) -> None
         if parcel:
             parcel.status = "PickedUp" # Het pakket is nu definitief weg
             parcel.picked_up_at = event_time
+        # ==========================================
+        # NIEUW: Breek af als het pakket al is opgehaald!
+        # ==========================================
+        else:
+            print(f"[MQTT] ⚠️ Duplicaat collect event genegeerd voor kluis {locker_id}.")
+        # ==========================================
         
         # 2. Zet de kluis weer op beschikbaar voor de volgende!
         locker = db.query(models.Locker).filter(models.Locker.id == locker_id).first()
@@ -464,15 +504,17 @@ def handle_collect(client: mqtt.Client, location_id: str, payload: dict) -> None
             locker.status = "Available"
             
         # 3. Logboek
-        new_log = models.AuditLog(
-            location_id=int(location_id),
-            locker_id=locker_id,
-            event_type="RETOUR_OPGEHAALD",
-            severity="INFO",
-            description=f"Retourpakket succesvol opgehaald door koerier ({carrier}).",
-            timestamp=event_time
-        )
-        db.add(new_log)
+        if parcel:
+            new_log = models.AuditLog(
+                location_id=int(location_id),
+                locker_id=locker_id,
+                event_type="RETOUR_OPGEHAALD",
+                severity="INFO",
+                description=f"Retourpakket succesvol opgehaald door koerier ({carrier}).",
+                timestamp=event_time
+            )
+            db.add(new_log)
+            
         db.commit()
         
     finally:
@@ -518,42 +560,53 @@ def handle_request_sync(client: mqtt.Client, location_id: str, payload: Dict[str
     print(f"[MQTT] Opstart-verzoek ontvangen van locatie {location_id}. Data verzamelen...")
     db = SessionLocal()
     try:
-        # 1. Haal de bewoners op
         users = db.query(models.User).filter(models.User.location_id == int(location_id)).all()
         user_list = [{"id": u.id, "name": u.name, "email": u.email, "unit_number": u.unit_number} for u in users]
         
-        # 2. NIEUW: Haal de kluisjes op voor deze muur (inclusief door_number!)
         lockers = db.query(models.Locker).filter(models.Locker.location_id == int(location_id)).all()
         locker_list = []
         
         for l in lockers:
-            # Zoek of er momenteel een pakket in dit specifieke kluisje ligt
             active_parcel = db.query(models.Parcel).filter(
                 models.Parcel.locker_id == l.id,
-                models.Parcel.status.in_(["Delivered", "AwaitingCourier"]) # Zorg dat retouren hier ook bij staan!            
-            ).first()
+                models.Parcel.status.in_(["Delivered", "AwaitingCourier"])            
+            ).order_by(models.Parcel.id.desc()).first()
             
+            # --- SLIMME STATUS LOGICA ---
+            if active_parcel:
+                if active_parcel.status == "AwaitingCourier":
+                    sync_status = "Return"
+                else:
+                    sync_status = "Occupied"
+            else:
+                sync_status = "Available"
+            
+            # 🚨 CRITIAL FIX: Sla de berekende status daadwerkelijk op in de Cloud DB!
+            if l.status != sync_status:
+                l.status = sync_status
+                
             locker_list.append({
                 "id": l.id, 
                 "size": l.size, 
                 "door_number": l.door_number,
-                "status": l.status,
+                "status": sync_status, 
                 "current_code_hash": active_parcel.pincode if active_parcel else None,
-                "carrier": active_parcel.courier if active_parcel else None,        # <--- NIEUW
-                "current_barcode": active_parcel.tracking_code if active_parcel else None # <--- NIEUW
+                "carrier": active_parcel.courier if active_parcel else None,
+                "current_barcode": active_parcel.tracking_code if active_parcel else None
             })
+            
+        # 🚨 CRITICAL FIX: Commit de wijzigingen aan de lockers tabel!
+        db.commit() 
         
-        # 3. Combineer alles in één dik sync-pakket
         sync_payload = {
             "users": user_list,
             "lockers": locker_list
         }
         
         client.publish(f"lockers/{location_id}/cmd/sync_users", json.dumps(sync_payload), qos=1)
-        print(f"[MQTT] ⬇ Full sync verstuurd: {len(user_list)} bewoners & {len(locker_list)} kluisjes.")
+        print(f"[MQTT] ⬇ Full sync verstuurd en Cloud DB hersteld.")
     finally:
         db.close()
-
 
 def push_user_to_edge(user: models.User):
     """ Verstuurt een enkele gebruiker naar de specifieke kluiswand via MQTT """
@@ -570,3 +623,22 @@ def push_user_to_edge(user: models.User):
     # We sturen dit met QoS 1 zodat we zeker weten dat de Pi het ontvangt
     mqtt_client.publish(topic, json.dumps(payload), qos=1)
     print(f"[MQTT PUSH] Gebruiker {user.id} gepusht naar locatie {user.location_id}")
+
+
+def handle_flush_complete(client: mqtt.Client, location_id: str, payload: Dict[str, Any]) -> None:
+    """
+    Wordt aangeroepen wanneer de kluiswand (Edge) na een internetstoring 
+    al zijn offline gebufferde events heeft doorgestuurd. 
+    De Cloud bevestigt dat alles is verwerkt met een 'sync_ready' ACK.
+    """
+    print(f"[MQTT] ✅ 'Flush complete' ontvangen van locatie {location_id}. Wachtrij is leeg!")
+    
+    # Stuur de ACK terug naar de specifieke kluiswand
+    ack_topic = f"lockers/{location_id}/cmd/sync_ready"
+    ack_payload = {
+        "status": "ready",
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+    
+    client.publish(ack_topic, payload=json.dumps(ack_payload), qos=1)
+    print(f"[MQTT] ⬆ 'sync_ready' (ACK) commando verzonden naar kluiswand {location_id}")
