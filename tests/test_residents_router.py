@@ -11,6 +11,7 @@ from fastapi import FastAPI
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from database import get_db
 from routers import residents
 from fastapi.testclient import TestClient
 from fastapi import status
@@ -36,9 +37,9 @@ def client(db_session):
 class TestGetResidents:
     """Test GET /api/residents endpoint."""
     
-    def test_get_residents_empty(self, client):
+    def test_get_residents_empty(self, client, auth_headers):
         """Test retrieving residents when none exist."""
-        response = client.get("/api/residents")
+        response = client.get("/api/residents", headers=auth_headers)
         
         assert response.status_code == 200
         data = response.json()
@@ -46,9 +47,9 @@ class TestGetResidents:
         assert isinstance(data["items"], list)
         assert len(data["items"]) == 0
     
-    def test_get_residents_success(self, client, resident_1, resident_2):
+    def test_get_residents_success(self, client, auth_headers, resident_1, resident_2):
         """Test successful resident listing."""
-        response = client.get("/api/residents")
+        response = client.get("/api/residents", headers=auth_headers)
         
         assert response.status_code == 200
         data = response.json()
@@ -59,7 +60,7 @@ class TestGetResidents:
         assert isinstance(items, list)
     
     @pytest.mark.skip(reason="Ticket-SW-102: Pagination test data assertion issue in SQLite")
-    def test_get_residents_pagination(self, client, db_session):
+    def test_get_residents_pagination(self, client, auth_headers, db_session):
         """Test pagination parameters."""
         # Create more residents
         import models
@@ -73,16 +74,16 @@ class TestGetResidents:
             db_session.add(user)
         db_session.commit()
         
-        response = client.get("/api/residents", params={"page": 1, "limit": 3})
+        response = client.get("/api/residents", params={"page": 1, "limit": 3}, headers=auth_headers)
         
         assert response.status_code == 200
         data = response.json()
         assert len(data["items"]) <= 3
         assert data["total"] >= 5
     
-    def test_get_residents_search(self, client, resident_1):
+    def test_get_residents_search(self, client, auth_headers, resident_1):
         """Test searching residents."""
-        response = client.get("/api/residents", params={"search": "Jan"})
+        response = client.get("/api/residents", params={"search": "Jan"}, headers=auth_headers)
         
         assert response.status_code == 200
         data = response.json()
@@ -93,7 +94,7 @@ class TestGetResidents:
 class TestCreateResident:
     """Test POST /api/residents endpoint."""
     
-    def test_create_resident_success(self, client, location_a, db_session):
+    def test_create_resident_success(self, client, auth_headers, location_a, db_session):
         """Test successful resident creation."""
         resident_data = {
             "name": "Test Resident",
@@ -103,7 +104,7 @@ class TestCreateResident:
             "location_id": location_a.id
         }
         
-        response = client.post("/api/residents", json=resident_data)
+        response = client.post("/api/residents", json=resident_data, headers=auth_headers)
         
         assert response.status_code == 200
         data = response.json()
@@ -111,7 +112,7 @@ class TestCreateResident:
         assert data["email"] == "test.resident@test.be"
         assert data["location_id"] == location_a.id
     
-    def test_create_resident_duplicate_email(self, client, resident_1):
+    def test_create_resident_duplicate_email(self, client, auth_headers, resident_1):
         """Test creating resident with existing email."""
         resident_data = {
             "name": "Duplicate",
@@ -120,7 +121,7 @@ class TestCreateResident:
             "location_id": resident_1.location_id
         }
         
-        response = client.post("/api/residents", json=resident_data)
+        response = client.post("/api/residents", json=resident_data, headers=auth_headers)
         
         # Pydantic EmailStr validates format first, but doesn't check duplicates
         # Database validation returns 400, but Pydantic returns 422 if email format is invalid
@@ -131,7 +132,7 @@ class TestCreateResident:
             assert "al in gebruik" in response.json()["detail"].lower() or "e-mail" in response.json()["detail"].lower()
         # If 422, Pydantic rejected it for some reason (unlikely with valid email)
     
-    def test_create_resident_invalid_email(self, client, location_a):
+    def test_create_resident_invalid_email(self, client, auth_headers, location_a):
         """Test creating resident with invalid email format."""
         resident_data = {
             "name": "Invalid Email",
@@ -140,7 +141,7 @@ class TestCreateResident:
             "location_id": location_a.id
         }
         
-        response = client.post("/api/residents", json=resident_data)
+        response = client.post("/api/residents", json=resident_data, headers=auth_headers)
         
         assert response.status_code == 422
 
@@ -148,7 +149,7 @@ class TestCreateResident:
 class TestUpdateResident:
     """Test PUT /api/residents/{resident_id} endpoint."""
     
-    def test_update_resident_success(self, client, resident_1):
+    def test_update_resident_success(self, client, auth_headers, resident_1):
         """Test successful resident update."""
         update_data = {
             "name": "Updated Name",
@@ -158,7 +159,8 @@ class TestUpdateResident:
         
         response = client.put(
             f"/api/residents/{resident_1.id}",
-            json=update_data
+            json=update_data,
+            headers=auth_headers
         )
         
         assert response.status_code == 200
@@ -167,7 +169,7 @@ class TestUpdateResident:
         assert data["email"] == "updated.resident@test.be"
     
     @pytest.mark.xfail(reason="Ticket-SW-104: Unique constraint handling in SQLite")
-    def test_update_resident_duplicate_email(self, client, resident_1, resident_2):
+    def test_update_resident_duplicate_email(self, client, auth_headers, resident_1, resident_2):
         """Test updating to existing email."""
         update_data = {
             "email": resident_2.email
@@ -175,18 +177,19 @@ class TestUpdateResident:
         
         response = client.put(
             f"/api/residents/{resident_1.id}",
-            json=update_data
+            json=update_data,
+            headers=auth_headers
         )
         
         # Should fail due to unique constraint
         assert response.status_code == 400
         assert "al in gebruik" in response.json()["detail"].lower() or "unique" in response.json()["detail"].lower() or "email" in response.json()["detail"].lower()
     
-    def test_update_resident_not_found(self, client):
+    def test_update_resident_not_found(self, client, auth_headers):
         """Test updating non-existent resident."""
         update_data = {"name": "Updated"}
         
-        response = client.put("/api/residents/99999", json=update_data)
+        response = client.put("/api/residents/99999", json=update_data, headers=auth_headers)
         
         assert response.status_code == 404
 
@@ -194,7 +197,7 @@ class TestUpdateResident:
 class TestDeleteResident:
     """Test DELETE /api/residents/{resident_id} endpoint."""
     
-    def test_delete_resident_success(self, client, db_session):
+    def test_delete_resident_success(self, client, auth_headers, db_session):
         """Test successful resident deletion."""
         import models
         user = models.User(
@@ -206,7 +209,7 @@ class TestDeleteResident:
         db_session.add(user)
         db_session.commit()
         
-        response = client.delete(f"/api/residents/{user.id}")
+        response = client.delete(f"/api/residents/{user.id}", headers=auth_headers)
         
         assert response.status_code == 200
         data = response.json()
@@ -216,9 +219,9 @@ class TestDeleteResident:
         deleted = db_session.query(models.User).filter_by(id=user.id).first()
         assert deleted is None
     
-    def test_delete_resident_not_found(self, client):
+    def test_delete_resident_not_found(self, client, auth_headers):
         """Test deleting non-existent resident."""
-        response = client.delete("/api/residents/99999")
+        response = client.delete("/api/residents/99999", headers=auth_headers)
         
         assert response.status_code == 404
 
@@ -226,14 +229,15 @@ class TestDeleteResident:
 class TestGenerateCredentials:
     """Test POST /api/residents/{resident_id}/credentials/generate endpoint."""
     
-    def test_generate_credentials_success(self, client, resident_1, parcel_delivered, db_session):
+    def test_generate_credentials_success(self, client, auth_headers, resident_1, parcel_delivered, db_session):
         """Test successful PIN generation."""
         # Make sure resident has active parcels
         parcel_delivered.user_id = resident_1.id
         db_session.commit()
         
         response = client.post(
-            f"/api/residents/{resident_1.id}/credentials/generate"
+            f"/api/residents/{resident_1.id}/credentials/generate",
+            headers=auth_headers
         )
         
         assert response.status_code == 200
@@ -242,17 +246,18 @@ class TestGenerateCredentials:
         assert "code" in data["message"].lower() or "e-mail" in data["message"].lower()
         assert "debug_pin" in data  # Debug output
     
-    def test_generate_credentials_no_active_parcels(self, client, resident_1):
+    def test_generate_credentials_no_active_parcels(self, client, auth_headers, resident_1):
         """Test generating credentials when no active parcels exist."""
         response = client.post(
-            f"/api/residents/{resident_1.id}/credentials/generate"
+            f"/api/residents/{resident_1.id}/credentials/generate",
+            headers=auth_headers
         )
         
         assert response.status_code == 400
         assert "geen pakketjes" in response.json()["detail"].lower() or "geen" in response.json()["detail"].lower()
     
-    def test_generate_credentials_not_found(self, client):
+    def test_generate_credentials_not_found(self, client, auth_headers):
         """Test generating credentials for non-existent resident."""
-        response = client.post("/api/residents/99999/credentials/generate")
+        response = client.post("/api/residents/99999/credentials/generate", headers=auth_headers)
         
         assert response.status_code == 404

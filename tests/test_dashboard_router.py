@@ -12,6 +12,7 @@ from fastapi import FastAPI
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from database import get_db
 from routers import dashboard
 from fastapi.testclient import TestClient
 
@@ -36,9 +37,9 @@ def client(db_session):
 class TestGetDashboardKPIs:
     """Test GET /api/dashboard/kpis endpoint."""
     
-    def test_get_kpis_empty_database(self, client):
+    def test_get_kpis_empty_database(self, client, auth_headers):
         """Test KPIs when database is empty."""
-        response = client.get("/api/dashboard/kpis")
+        response = client.get("/api/dashboard/kpis", headers=auth_headers)
         
         assert response.status_code == 200
         data = response.json()
@@ -53,7 +54,7 @@ class TestGetDashboardKPIs:
         assert data["total_walls"] == 0
         assert data["offline_locations"] == 0
     
-    def test_get_kpis_with_data(self, client, location_a, location_b, parcel_delivered, audit_log_info, db_session):
+    def test_get_kpis_with_data(self, client, auth_headers, location_a, location_b, parcel_delivered, audit_log_info, db_session):
         """Test KPIs with actual data."""
         # Ensure location_b is offline
         import models
@@ -70,7 +71,7 @@ class TestGetDashboardKPIs:
         db_session.add(critical_log)
         db_session.commit()
         
-        response = client.get("/api/dashboard/kpis")
+        response = client.get("/api/dashboard/kpis", headers=auth_headers)
         
         assert response.status_code == 200
         data = response.json()
@@ -87,7 +88,7 @@ class TestGetDashboardKPIs:
         # open_errors should be at least 1 (the CRITICAL log)
         assert data["open_errors"] >= 1
     
-    def test_get_kpis_today_filter(self, client, db_session):
+    def test_get_kpis_today_filter(self, client, auth_headers, db_session):
         """Test that parcels_today filters correctly by today's date."""
         import models
         
@@ -126,16 +127,16 @@ class TestGetDashboardKPIs:
         db_session.add(yesterday_parcel)
         db_session.commit()
         
-        response = client.get("/api/dashboard/kpis")
+        response = client.get("/api/dashboard/kpis", headers=auth_headers)
         
         assert response.status_code == 200
         data = response.json()
         # Yesterday's parcel should NOT be counted in parcels_today
         # Only parcels created today should be counted
     
-    def test_get_kpis_response_structure(self, client):
+    def test_get_kpis_response_structure(self, client, auth_headers):
         """Test that KPI response has correct structure."""
-        response = client.get("/api/dashboard/kpis")
+        response = client.get("/api/dashboard/kpis", headers=auth_headers)
         
         assert response.status_code == 200
         data = response.json()
@@ -153,7 +154,7 @@ class TestGetDashboardKPIs:
             assert field in data
             assert isinstance(data[field], int)
     
-    def test_get_kpis_calculation_accuracy(self, client, db_session):
+    def test_get_kpis_calculation_accuracy(self, client, auth_headers, db_session):
         """Test KPI calculations are accurate."""
         import models
         from sqlalchemy import func
@@ -167,7 +168,7 @@ class TestGetDashboardKPIs:
             models.AuditLog.severity == "CRITICAL"
         ).count()
         
-        response = client.get("/api/dashboard/kpis")
+        response = client.get("/api/dashboard/kpis", headers=auth_headers)
         
         assert response.status_code == 200
         data = response.json()

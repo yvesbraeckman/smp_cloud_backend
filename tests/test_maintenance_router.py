@@ -11,6 +11,7 @@ from fastapi import FastAPI
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from database import get_db
 from routers import maintenance
 from fastapi.testclient import TestClient
 from fastapi import status
@@ -36,7 +37,7 @@ def client(db_session):
 class TestRemoteUnlock:
     """Test POST /api/maintenance/remote-unlock endpoint."""
     
-    def test_remote_unlock_success(self, client, location_a, locker_available):
+    def test_remote_unlock_success(self, client, auth_headers, location_a, locker_available):
         """Test successful remote unlock command."""
         unlock_data = {
             "location_id": location_a.id,
@@ -44,14 +45,14 @@ class TestRemoteUnlock:
             "reason": "Admin override test"
         }
         
-        response = client.post("/api/maintenance/remote-unlock", json=unlock_data)
+        response = client.post("/api/maintenance/remote-unlock", json=unlock_data, headers=auth_headers)
         
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
         assert "verzonden" in data["message"].lower() or "MQTT" in data["message"]
     
-    def test_remote_unlock_locker_not_found(self, client, location_a):
+    def test_remote_unlock_locker_not_found(self, client, auth_headers, location_a):
         """Test remote unlock with non-existent locker."""
         unlock_data = {
             "location_id": location_a.id,
@@ -59,11 +60,11 @@ class TestRemoteUnlock:
             "reason": "Test"
         }
         
-        response = client.post("/api/maintenance/remote-unlock", json=unlock_data)
+        response = client.post("/api/maintenance/remote-unlock", json=unlock_data, headers=auth_headers)
         
         assert response.status_code == 404
     
-    def test_remote_unlock_location_not_found(self, client):
+    def test_remote_unlock_location_not_found(self, client, auth_headers):
         """Test remote unlock with non-existent location."""
         unlock_data = {
             "location_id": 99999,
@@ -71,7 +72,7 @@ class TestRemoteUnlock:
             "reason": "Test"
         }
         
-        response = client.post("/api/maintenance/remote-unlock", json=unlock_data)
+        response = client.post("/api/maintenance/remote-unlock", json=unlock_data, headers=auth_headers)
         
         assert response.status_code == 404
 
@@ -79,21 +80,21 @@ class TestRemoteUnlock:
 class TestSetServiceMode:
     """Test POST /api/maintenance/service-mode endpoint."""
     
-    def test_set_service_mode_to_maintenance(self, client, locker_available):
+    def test_set_service_mode_to_maintenance(self, client, auth_headers, locker_available):
         """Test setting locker to maintenance mode."""
         service_data = {
             "locker_id": locker_available.id,
             "status": "Maintenance"
         }
         
-        response = client.post("/api/maintenance/service-mode", json=service_data)
+        response = client.post("/api/maintenance/service-mode", json=service_data, headers=auth_headers)
         
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
         assert "status" in data["message"].lower() or "geüpdatet" in data["message"].lower()
     
-    def test_set_service_mode_to_available(self, client, locker_available, db_session):
+    def test_set_service_mode_to_available(self, client, auth_headers, locker_available, db_session):
         """Test setting locker back to available mode."""
         import models
         # First set to maintenance
@@ -105,7 +106,7 @@ class TestSetServiceMode:
             "status": "Available"
         }
         
-        response = client.post("/api/maintenance/service-mode", json=service_data)
+        response = client.post("/api/maintenance/service-mode", json=service_data, headers=auth_headers)
         
         assert response.status_code == 200
         data = response.json()
@@ -115,13 +116,13 @@ class TestSetServiceMode:
         db_session.refresh(locker_available)
         assert locker_available.status == "Available"
     
-    def test_set_service_mode_locker_not_found(self, client):
+    def test_set_service_mode_locker_not_found(self, client, auth_headers):
         """Test service mode with non-existent locker."""
         service_data = {
             "locker_id": 99999,
             "status": "Maintenance"
         }
         
-        response = client.post("/api/maintenance/service-mode", json=service_data)
+        response = client.post("/api/maintenance/service-mode", json=service_data, headers=auth_headers)
         
         assert response.status_code == 404

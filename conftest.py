@@ -297,34 +297,68 @@ def audit_log_critical(db_session, location_a):
 
 
 @pytest.fixture
-def auth_headers():
+def auth_headers(db_session):
     """Generate basic auth headers for testing."""
     import jwt
     import datetime
     import os
     
+    # Get first admin user from database to ensure correct ID in token
+    admin = db_session.query(models.Admin).first()
+    if not admin:
+        # Create one if it doesn't exist
+        from passlib.context import CryptContext
+        pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        admin = models.Admin(
+            name="Test Admin",
+            email="test@smartwall.be",
+            password_hash=pwd_context.hash("TestPassword123!"),
+            phone="+32400123456",
+            role="admin"
+        )
+        db_session.add(admin)
+        db_session.commit()
+        db_session.refresh(admin)
+    
     SECRET_KEY = os.getenv("SECRET_KEY", "super_geheime_sleutel_voor_smartwall")
     ALGORITHM = "HS256"
     
-    expire = datetime.datetime.utcnow() + datetime.timedelta(hours=24)
-    token_data = {"sub": "1", "exp": expire}
+    expire = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=24)
+    token_data = {"sub": str(admin.id), "exp": expire}
     token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
     
     return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture
-def superadmin_auth_headers():
+def superadmin_auth_headers(db_session):
     """Generate auth headers for superadmin."""
     import jwt
     import datetime
     import os
     
+    # Get first superadmin user from database to ensure correct ID in token
+    admin = db_session.query(models.Admin).filter(models.Admin.role == "superadmin").first()
+    if not admin:
+        # Create one if it doesn't exist
+        from passlib.context import CryptContext
+        pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+        admin = models.Admin(
+            name="Super Admin",
+            email="superadmin@smartwall.be",
+            password_hash=pwd_context.hash("TestPassword123!"),
+            phone="+32400987654",
+            role="superadmin"
+        )
+        db_session.add(admin)
+        db_session.commit()
+        db_session.refresh(admin)
+    
     SECRET_KEY = os.getenv("SECRET_KEY", "super_geheime_sleutel_voor_smartwall")
     ALGORITHM = "HS256"
     
-    expire = datetime.datetime.utcnow() + datetime.timedelta(hours=24)
-    token_data = {"sub": "1", "exp": expire}
+    expire = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=24)
+    token_data = {"sub": str(admin.id), "exp": expire}
     token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
     
     return {"Authorization": f"Bearer {token}"}

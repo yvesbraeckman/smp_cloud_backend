@@ -461,9 +461,9 @@ class TestMQTTReturnHandler:
         assert parcel.status == "AwaitingCourier"
         assert parcel.user_id == user.id
         
-        # Verify locker is occupied
+        # Verify locker status (for returns, status is "Return" not "Occupied")
         db_session.refresh(locker)
-        assert locker.status == "Occupied"
+        assert locker.status == "Return"
         
         # Verify audit log was created
         audit_log = db_session.query(models.AuditLog).filter_by(
