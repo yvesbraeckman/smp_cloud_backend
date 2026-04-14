@@ -1,11 +1,11 @@
 """
-MQTT Client Configuratie
-========================
-Dit bestand beheert de permanente verbinding tussen de FastAPI backend (Cloud)
-en de Mosquitto MQTT Broker. 
+MQTT Client Configuration
+=========================
 
-Deze client draait op de achtergrond in een eigen thread en luistert (subscribes)
-naar binnenkomende signalen van alle kluiswanden (zoals leveringen, afhalingen, en hartslagen).
+Maintains a persistent MQTT connection between the FastAPI cloud backend and
+the Mosquitto broker. The client runs in a dedicated background thread and
+subscribes to incoming events from all locker walls (deliveries, pickups,
+returns, alarms, telemetry, and sync requests).
 """
 
 import os
@@ -14,133 +14,152 @@ import ssl
 import paho.mqtt.client as mqtt
 from typing import Any
 
-# Importeer alle specifieke acties vanuit handlers.py
 from mqtt.handlers import (
-    handle_delivery, 
-    handle_pickup, 
-    handle_alarm, 
+    handle_delivery,
+    handle_pickup,
+    handle_alarm,
     handle_telemetry,
     handle_request_sync,
     push_user_to_edge,
     handle_return,
     handle_collect,
-    handle_flush_complete
+    handle_flush_complete,
 )
 
 # ==========================================
-# CONFIGURATIE (Via environment variabelen met veilige fallbacks)
+# Configuration (environment variables with no defaults — must be set)
 # ==========================================
+
 MQTT_BROKER = os.getenv("MQTT_BROKER")
 MQTT_PORT = int(os.getenv("MQTT_PORT"))
 
 MQTT_USER = os.getenv("MQTT_USER")
 MQTT_PASS = os.getenv("MQTT_PASS")
 
-# Initialiseer de MQTT client
+# Fixed client ID identifies this backend uniquely on the broker
 client = mqtt.Client(client_id="fastapi_cloud_backend")
 
 
 # ==========================================
-# CALLBACK FUNCTIES
+# Callbacks
 # ==========================================
 
 def on_connect(client: mqtt.Client, userdata: Any, flags: dict, rc: int) -> None:
-    """
-    Wordt afgevuurd zodra de connectie met de broker slaagt of faalt.
-    Bij succes (rc == 0) abonneren we direct op alle relevante topics.
+    """Called when the broker connection succeeds or fails.
+
+    On success (rc == 0), subscribes to all locker-wall topics:
+      - ``lockers/+/events/#``   — all event sub-types for any location
+      - ``lockers/+/telemetry``  — periodic heartbeat for any location
+
+    The ``+`` wildcard matches exactly one topic level (the location_id),
+    and ``#`` matches all remaining levels.
+
+    Args:
+        client: The MQTT client instance.
+        userdata: User-defined data (unused).
+        flags: Response flags from the broker.
+        rc: Result code — 0 means success.
     """
     if rc == 0:
-        print("[MQTT] Cloud Backend succesvol verbonden met broker!")
-        # Luister naar ALLES van ALLE locaties
-        # + is een wildcard voor exact 1 niveau (location_id)
-        # # is een wildcard voor alles wat erna komt
+        print("[MQTT] Cloud backend connected to broker successfully.")
         client.subscribe("lockers/+/events/#")
         client.subscribe("lockers/+/telemetry")
     else:
-        print(f"[MQTT ERROR] Verbinding mislukt met code {rc}")
+        print(f"[MQTT ERROR] Connection failed with code {rc}")
 
 
 def on_message(client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage) -> None:
-    # 1. LOG ALLES WAT BINNENKOMT (Zelfs als het onzin is)
-    print(f"\n[MQTT DEBUG] ---> Bericht ontvangen op topic: {msg.topic}")
-    print(f"[MQTT DEBUG] ---> Ruwe payload: {msg.payload.decode()}")
-    
+    """Main message router. Parses the topic and dispatches to the correct handler.
+
+    Expected topic format: ``lockers/{location_id}/{category}[/{event_type}]``
+
+    Dispatched event types (under ``events/``):
+      - delivery, pickup, return, collect, alarm, request_sync, flush_complete
+
+    The ``telemetry`` category is handled separately without a sub-type.
+
+    Args:
+        client: The MQTT client instance.
+        userdata: User-defined data (unused).
+        msg: The received MQTT message.
+    """
+    print(f"\n[MQTT DEBUG] ---> Message received on topic: {msg.topic}")
+    print(f"[MQTT DEBUG] ---> Raw payload: {msg.payload.decode()}")
+
     topic_parts = msg.topic.split("/")
-    
-    if len(topic_parts) >= 3:
-        location_id = topic_parts[1]
-        category = topic_parts[2]  
-        
-        try:
-            payload = json.loads(msg.payload.decode())
-            print(f"[MQTT DEBUG] JSON succesvol geparsed. Categorie: {category}")
-            
-            if category == "events" and len(topic_parts) >= 4:
-                event_type = topic_parts[3]
-                print(f"[MQTT DEBUG] Event type gedetecteerd: {event_type}")
-                
-                if event_type == "delivery":
-                    handle_delivery(client, location_id, payload)
-                elif event_type == "pickup":
-                    handle_pickup(client, location_id, payload)
-                elif event_type == "return":  # <--- NIEUW: De retour-router
-                    print("[MQTT DEBUG] Ik ga nu handle_return aanroepen!")
-                    handle_return(client, location_id, payload)
-                elif event_type == "collect": # <--- NIEUW
-                    print("[MQTT DEBUG] Ik ga nu handle_collect aanroepen!")
-                    handle_collect(client, location_id, payload)
-                elif event_type == "alarm":
-                    print("[MQTT DEBUG] Ik ga nu handle_alarm aanroepen!")
-                    handle_alarm(client, location_id, payload)
-                elif event_type == "request_sync":
-                    handle_request_sync(client, location_id, payload)
-                elif event_type == "flush_complete": # <--- NIEUW: Vangt de marker op
-                    print("[MQTT DEBUG] Offline buffer is leeg, ACK sturen!")
-                    handle_flush_complete(client, location_id, payload)
-                else:
-                    print(f"[MQTT WARNING] Onbekend event type: {event_type}")
-            
-            elif category == "telemetry":
-                handle_telemetry(client, location_id, payload)
-                
-        except json.JSONDecodeError:
-            print(f"[MQTT ERROR] Dit is geen geldige JSON!")
-        except Exception as e:
-            print(f"[MQTT ERROR] Fout bij verwerken (crash in de handler?): {e}")
-    else:
-        print(f"[MQTT DEBUG] Topic structuur te kort, wordt genegeerd.")
+
+    if len(topic_parts) < 3:
+        print("[MQTT DEBUG] Topic structure too short, ignoring.")
+        return
+
+    location_id = topic_parts[1]
+    category = topic_parts[2]
+
+    try:
+        payload = json.loads(msg.payload.decode())
+        print(f"[MQTT DEBUG] JSON parsed successfully. Category: {category}")
+
+        if category == "events" and len(topic_parts) >= 4:
+            event_type = topic_parts[3]
+            print(f"[MQTT DEBUG] Event type detected: {event_type}")
+
+            if event_type == "delivery":
+                handle_delivery(client, location_id, payload)
+            elif event_type == "pickup":
+                handle_pickup(client, location_id, payload)
+            elif event_type == "return":
+                handle_return(client, location_id, payload)
+            elif event_type == "collect":
+                handle_collect(client, location_id, payload)
+            elif event_type == "alarm":
+                handle_alarm(client, location_id, payload)
+            elif event_type == "request_sync":
+                handle_request_sync(client, location_id, payload)
+            elif event_type == "flush_complete":
+                handle_flush_complete(client, location_id, payload)
+            else:
+                print(f"[MQTT WARNING] Unknown event type: {event_type}")
+
+        elif category == "telemetry":
+            handle_telemetry(client, location_id, payload)
+
+    except json.JSONDecodeError:
+        print("[MQTT ERROR] Payload is not valid JSON.")
+    except Exception as e:
+        print(f"[MQTT ERROR] Error processing message: {e}")
+
 
 # ==========================================
-# CLIENT INSTELLEN & STARTEN
+# Client setup and lifecycle
 # ==========================================
 
-# Koppel de callback functies aan de client
 client.on_connect = on_connect
 client.on_message = on_message
 
-# We verbinden intern via MQTTS over poort 8883. 
-# Omdat we communiceren via de Docker-netwerknaam ('mqtt-broker') en niet via 
-# een formeel domein zoals 'mqtt.jouwwebsite.be', negeren we de hostname check (ssl.CERT_NONE).
+# MQTTS on port 8883. Because communication happens over the Docker network
+# using the service name (not a real domain), hostname verification is disabled.
 client.tls_set(cert_reqs=ssl.CERT_NONE)
 client.tls_insecure_set(True)
 client.username_pw_set(MQTT_USER, MQTT_PASS)
 
+
 def start_mqtt() -> None:
-    """
-    Start de MQTT client en laat deze op de achtergrond (loop_start) meedraaien 
-    naast de reguliere FastAPI processen.
+    """Connect to the broker and start the non-blocking background event loop.
+
+    Called once at FastAPI startup. The keepalive interval is 60 seconds.
     """
     try:
-        # Connectie maken met een timeout (keepalive) van 60 seconden
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        client.loop_start()  # Start de niet-blokkerende achtergrond-thread
+        client.loop_start()
     except Exception as e:
-        print(f"[MQTT FATAL] Kon de MQTT service niet opstarten: {e}")
+        print(f"[MQTT FATAL] Could not start MQTT service: {e}")
+
 
 def stop_mqtt() -> None:
-    """
-    Stopt de MQTT client netjes af als de FastAPI server wordt afgesloten.
+    """Stop the background loop and disconnect from the broker.
+
+    Called on FastAPI shutdown to ensure a clean disconnect.
     """
     client.loop_stop()
     client.disconnect()
-    print("[MQTT] Service veilig afgesloten.")
+    print("[MQTT] Service shut down safely.")
