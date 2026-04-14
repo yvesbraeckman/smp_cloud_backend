@@ -144,7 +144,7 @@ backend/
 ├── mqtt/                   # MQTT communication layer
 │   ├── client.py           # Paho-MQTT client, TLS, lifecycle
 │   └── handlers.py         # 8 event handlers + email helpers
-├── tests/                  # Test suite (121 tests, 87% coverage)
+├── tests/                  # Test suite (171 tests, 91% coverage)
 ├── Dockerfile              # Python 3.11-slim container
 ├── requirements.txt        # Python dependencies
 └── TESTING.md              # Full testing documentation
@@ -152,7 +152,7 @@ backend/
 
 ## Testing
 
-The test suite contains **121 tests** with **87% code coverage**. See [TESTING.md](TESTING.md) for full details.
+The test suite contains **171 tests** with **91% code coverage**. See [TESTING.md](TESTING.md) for full details.
 
 ```bash
 # Run all tests
