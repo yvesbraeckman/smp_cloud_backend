@@ -192,7 +192,7 @@ class TestMQTTDeliveryHandler:
         with patch('mqtt.handlers.print') as mock_print:
             handle_delivery(mock_client, str(location.id), payload)
             mock_print.assert_any_call(
-                "[MQTT ERROR] 🚨 Kluis 99999 bestaat niet in de cloud database! Maak deze eerst aan."
+                "[MQTT ERROR] Locker 99999 does not exist in cloud database."
             )
         
         # Verify no parcel was created

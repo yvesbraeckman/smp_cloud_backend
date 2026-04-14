@@ -97,7 +97,7 @@ class TestAdminUpdateProfile:
         # Allow both 400 (database constraint) and 422 (Pydantic validation)
         assert response.status_code in [400, 422]
         if response.status_code == 400:
-            assert "al in gebruik" in response.json()["detail"].lower()
+            assert "already in use" in response.json()["detail"].lower()
         else:
             detail = response.json()["detail"]
             assert isinstance(detail, list)
@@ -150,7 +150,7 @@ class TestAdminUpdatePassword:
         
         assert response.status_code == 200
         data = response.json()
-        assert "wachtwoord" in data["detail"].lower() or "gewijzigd" in data["detail"].lower()
+        assert "password" in data["detail"].lower()
         
         # Verify password was actually changed
         db_session.refresh(admin_user)
@@ -168,7 +168,7 @@ class TestAdminUpdatePassword:
         )
         
         assert response.status_code in [400, 422]
-        assert "huidig" in response.json()["detail"].lower() or "onjuist" in response.json()["detail"].lower()
+        assert "current password" in response.json()["detail"].lower() or "incorrect" in response.json()["detail"].lower()
     
     def test_update_password_empty_fields(self, client, admin_user, auth_headers):
         """Test password update with empty fields."""
@@ -183,7 +183,7 @@ class TestAdminUpdatePassword:
         
         # Empty password validation returns 400 (not 422 validation error)
         assert response.status_code in [400, 422]
-        assert "huidig" in response.json()["detail"].lower() or "onjuist" in response.json()["detail"].lower() or "empty" in response.json()["detail"].lower()
+        assert "current password" in response.json()["detail"].lower() or "incorrect" in response.json()["detail"].lower()
 
 
 class TestAdminList:
@@ -274,7 +274,7 @@ class TestAdminCreate:
         )
         
         assert response.status_code in [400, 422]
-        assert "al in gebruik" in response.json()["detail"].lower()
+        assert "already in use" in response.json()["detail"].lower()
     
     def test_create_admin_missing_fields(self, client, superadmin_user, superadmin_auth_headers):
         """Test creating admin with missing required fields."""
@@ -356,4 +356,4 @@ class TestAdminDelete:
         )
         
         assert response.status_code == 404
-        assert "gevonden" in response.json()["detail"].lower() or "niet" in response.json()["detail"].lower()
+        assert "not found" in response.json()["detail"].lower()

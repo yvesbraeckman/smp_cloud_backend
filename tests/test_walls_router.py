@@ -102,7 +102,7 @@ class TestGetWallDetail:
         response = client.get("/api/walls/99999", headers=auth_headers)
         
         assert response.status_code == 404
-        assert "niet gevonden" in response.json()["detail"].lower() or "muur" in response.json()["detail"].lower()
+        assert "not found" in response.json()["detail"].lower()
 
 
 class TestGetLockerDetail:
@@ -216,7 +216,7 @@ class TestDeleteWall:
         
         assert response.status_code == 200
         data = response.json()
-        assert "succesvol" in data["message"].lower() or "verwijderd" in data["message"].lower()
+        assert "deleted" in data["message"].lower()
         
         # Verify wall was deleted
         deleted = db_session.query(models.Location).filter_by(id=loc.id).first()
@@ -227,7 +227,7 @@ class TestDeleteWall:
         response = client.delete(f"/api/walls/{location_a.id}", headers=auth_headers)
         
         assert response.status_code == 400
-        assert "bevat nog een" in response.json()["detail"].lower() or "bezette" in response.json()["detail"].lower()
+        assert "cannot delete" in response.json()["detail"].lower() or "still contains" in response.json()["detail"].lower()
     
     def test_delete_wall_not_found(self, client, auth_headers):
         """Test deleting non-existent wall."""

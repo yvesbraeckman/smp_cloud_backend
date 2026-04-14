@@ -75,7 +75,7 @@ class TestAuthLogin:
         )
         
         assert response.status_code == 401
-        assert response.json()["detail"] == "E-mail of wachtwoord onjuist"
+        assert response.json()["detail"] == "Invalid email or password"
     
     def test_login_user_not_found(self, client):
         """Test login with non-existent user."""
@@ -88,7 +88,7 @@ class TestAuthLogin:
         )
         
         assert response.status_code == 401
-        assert response.json()["detail"] == "E-mail of wachtwoord onjuist"
+        assert response.json()["detail"] == "Invalid email or password"
     
     def test_login_empty_password(self, client):
         """Test login with empty password."""
@@ -101,7 +101,7 @@ class TestAuthLogin:
         )
         
         assert response.status_code == 401  # Returns 401 for invalid credentials (empty password)
-        assert "onjuist" in response.json()["detail"].lower()
+        assert "invalid" in response.json()["detail"].lower()
 
 
 class TestAuthLogout:
@@ -115,7 +115,7 @@ class TestAuthLogout:
         data = response.json()
         assert data["success"] is True
         assert "message" in data
-        assert "uitgelogd" in data["message"].lower()
+        assert "logged out" in data["message"].lower()
 
 
 class TestAuthForgotPassword:
@@ -134,7 +134,7 @@ class TestAuthForgotPassword:
         data = response.json()
         assert data["success"] is True
         # Security: Should not reveal if email exists
-        assert "reset-link" in data["message"].lower() or "bekend" in data["message"].lower()
+        assert "reset link" in data["message"].lower() or "registered" in data["message"].lower()
     
     def test_forgot_password_nonexistent_email(self, client):
         """Test forgot password with non-existent email."""
@@ -190,7 +190,7 @@ class TestAuthResetPassword:
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
-        assert "wachtwoord" in data["message"].lower() or "geslaagd" in data["message"].lower()
+        assert "password" in data["message"].lower() or "changed" in data["message"].lower()
     
     def test_reset_password_expired_token(self, client, admin_user):
         """Test password reset with expired token."""
@@ -216,7 +216,7 @@ class TestAuthResetPassword:
         
         assert response.status_code == 400
         data = response.json()
-        assert "verlopen" in data["detail"].lower()
+        assert "expired" in data["detail"].lower()
     
     def test_reset_password_invalid_type(self, client, admin_user):
         """Test password reset with wrong token type."""
@@ -242,7 +242,7 @@ class TestAuthResetPassword:
         
         assert response.status_code == 400
         data = response.json()
-        assert "ongeldig type token" in data["detail"].lower()
+        assert "invalid token type" in data["detail"].lower()
     
     def test_reset_password_invalid_token(self, client):
         """Test password reset with invalid token."""
@@ -256,7 +256,7 @@ class TestAuthResetPassword:
         
         assert response.status_code == 400
         data = response.json()
-        assert "ongeldig" in data["detail"].lower() or "corrupte" in data["detail"].lower()
+        assert "invalid" in data["detail"].lower() or "corrupted" in data["detail"].lower()
 
 
 class TestAuthGetMe:
@@ -282,7 +282,7 @@ class TestAuthGetMe:
         
         assert response.status_code == 401
         data = response.json()
-        assert "Niet ingelogd" in data["detail"] or "Ongeldig token" in data["detail"]
+        assert "not authenticated" in data["detail"].lower() or "invalid token" in data["detail"].lower()
     
     def test_get_me_invalid_token(self, client):
         """Test getting user profile with invalid token."""

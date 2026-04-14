@@ -1,9 +1,10 @@
 """
-Router: Kluiswanden & Deurtjes (Walls & Lockers)
-================================================
-Dit bestand bevat de endpoints voor het ophalen van de hardware statussen.
-Hier berekent de backend live of een kluiswand online is (via IoT heartbeats)
-en wat de huidige bezettingsgraad van de kluisjes is.
+Router: Walls & Lockers
+========================
+
+Endpoints for reading wall and locker hardware status, occupancy,
+online/offline detection based on heartbeat timestamps, and full
+CRUD for wall (location) management.
 """
 
 from fastapi import APIRouter, Depends, Query, HTTPException
@@ -17,28 +18,35 @@ import schemas
 from database import get_db
 from routers.auth import get_current_user
 
-# Prefix voor alle routes in dit bestand
 router = APIRouter(
     prefix="/api",
-    dependencies=[Depends(get_current_user)]
+    dependencies=[Depends(get_current_user)],
 )
 
 
 @router.get(
-    "/walls", 
+    "/walls",
     response_model=List[schemas.WallListResponse],
-    summary="Overzicht kluiswanden ophalen",
-    response_description="Lijst met alle kluiswanden inclusief bezetting en live status."
+    summary="List all walls",
+    response_description="List of walls with occupancy and live status.",
 )
 def get_walls(
-    search: Optional[str] = Query(None, description="Zoek op naam van de kluiswand"), 
-    status_filter: Optional[str] = Query(None, alias="status", description="Filter op ONLINE of OFFLINE"),
-    db: Session = Depends(get_db)
+    search: Optional[str] = Query(None, description="Search by wall name"),
+    status_filter: Optional[str] = Query(None, alias="status", description="Filter by ONLINE or OFFLINE"),
+    db: Session = Depends(get_db),
 ) -> Any:
-    """
-    Haalt de lijst met alle Wall Cards op voor het dashboard.
-    Berekent voor elke muur dynamisch de bezetting en de online/offline status 
-    door te kijken naar de meest recente `last_seen` timestamp van de kluisjes.
+    """Return all walls with occupancy stats and online/offline status.
+
+    A wall is considered **offline** when its ``last_heartbeat`` is older
+    than 5 minutes from the current UTC time.
+
+    Args:
+        search: Optional name search.
+        status_filter: Filter by ``ONLINE`` or ``OFFLINE``.
+        db: SQLAlchemy session.
+
+    Returns:
+        List of wall summary dicts.
     """
     locations = db.query(models.Location)
     if search:
@@ -46,31 +54,26 @@ def get_walls(
     locations = locations.all()
 
     response_data = []
-    
-    # 5 minuten grens voor offline status
+
     offline_threshold = datetime.now(timezone.utc) - timedelta(minutes=5)
 
     for loc in locations:
-        # Haal alle kluizen op voor deze muur
         lockers = db.query(models.Locker).filter(models.Locker.location_id == loc.id).all()
         total_lockers = len(lockers)
         occupied_lockers = sum(1 for l in lockers if l.status == "Occupied")
-        
-        # Check active alarms
+
         alarms = db.query(models.AuditLog).filter(
             models.AuditLog.locker_id.in_([l.id for l in lockers]),
-            models.AuditLog.severity == "CRITICAL"
+            models.AuditLog.severity == "CRITICAL",
         ).count()
 
-        # --- NIEUWE LOGICA: Direct de muur status checken ---
         last_sync = loc.last_heartbeat
         if last_sync and last_sync.tzinfo is None:
-             last_sync = last_sync.replace(tzinfo=timezone.utc)
-             
+            last_sync = last_sync.replace(tzinfo=timezone.utc)
+
         is_online = last_sync and last_sync > offline_threshold
         wall_status = "ONLINE" if is_online else "OFFLINE"
 
-        # Pas status filter toe als deze is meegegeven in de URL (?status=online)
         if status_filter and status_filter.upper() != "ALL":
             if status_filter.upper() != wall_status:
                 continue
@@ -81,7 +84,7 @@ def get_walls(
             "status": wall_status,
             "occupancy": f"{occupied_lockers}/{total_lockers}",
             "active_alarms": alarms,
-            "last_sync": last_sync
+            "last_sync": last_sync,
         })
 
     return response_data
@@ -89,29 +92,44 @@ def get_walls(
 
 @router.get("/walls/{wall_id}", response_model=schemas.WallDetailResponse)
 def get_wall_detail(wall_id: int, db: Session = Depends(get_db)) -> Any:
+    """Return detailed information for a single wall.
+
+    Lockers that are ``Occupied`` but hold an ``AwaitingCourier`` parcel are
+    overridden to show ``Return`` status for frontend display purposes.
+
+    Args:
+        wall_id: ID of the wall (location).
+        db: SQLAlchemy session.
+
+    Returns:
+        Wall detail dict with nested locker list.
+
+    Raises:
+        HTTPException 404: If the wall is not found.
+    """
     loc = db.query(models.Location).filter(models.Location.id == wall_id).first()
     if not loc:
-        raise HTTPException(status_code=404, detail="Muur niet gevonden")
+        raise HTTPException(status_code=404, detail="Wall not found")
 
     lockers = db.query(models.Locker).filter(models.Locker.location_id == wall_id).all()
-    
-    # --- NIEUW: Check voor retouren in bezette kluisjes ---
+
+    # Override status for display: an Occupied locker holding a return
+    # parcel should appear as "Return" in the frontend
     for locker in lockers:
         if locker.status == "Occupied":
             parcel = db.query(models.Parcel).filter(
                 models.Parcel.locker_id == locker.id,
-                models.Parcel.status == "AwaitingCourier"
+                models.Parcel.status == "AwaitingCourier",
             ).first()
             if parcel:
-                locker.status = "Return" # Verander de status puur voor de frontend weergave
-    # ------------------------------------------------------
-    
+                locker.status = "Return"
+
     offline_threshold = datetime.now(timezone.utc) - timedelta(minutes=5)
-    
+
     last_sync = loc.last_heartbeat
     if last_sync and last_sync.tzinfo is None:
-         last_sync = last_sync.replace(tzinfo=timezone.utc)
-         
+        last_sync = last_sync.replace(tzinfo=timezone.utc)
+
     is_online = last_sync and last_sync > offline_threshold
     wall_status = "ONLINE" if is_online else "OFFLINE"
 
@@ -120,30 +138,39 @@ def get_wall_detail(wall_id: int, db: Session = Depends(get_db)) -> Any:
         "name": loc.name,
         "status": wall_status,
         "last_sync": last_sync,
-        "lockers": lockers
+        "lockers": lockers,
     }
 
 
 @router.get(
-    "/lockers/{locker_id}", 
+    "/lockers/{locker_id}",
     response_model=schemas.LockerDetailResponse,
-    summary="Details kluisje ophalen",
-    response_description="Alle informatie van één kluisje, inclusief gekoppeld pakket."
+    summary="Get locker details",
+    response_description="Full locker information including linked parcel and resident.",
 )
 def get_locker_detail(locker_id: int, db: Session = Depends(get_db)) -> Any:
-    """
-    Haalt alle details van één kluisje op. 
-    Als de kluis de status 'Occupied' heeft, zoekt deze route ook op welk 
-    specifiek pakket (en welke bewoner) aan deze kluis gekoppeld is.
+    """Return all details for a single locker.
+
+    If the locker is occupied, includes the active parcel and the linked
+    resident's name and unit number.
+
+    Args:
+        locker_id: ID of the locker.
+        db: SQLAlchemy session.
+
+    Returns:
+        Locker detail dict.
+
+    Raises:
+        HTTPException 404: If the locker is not found.
     """
     locker = db.query(models.Locker).filter(models.Locker.id == locker_id).first()
     if not locker:
-        raise HTTPException(status_code=404, detail="Kluis niet gevonden")
+        raise HTTPException(status_code=404, detail="Locker not found")
 
-    # Zoek of er een actief pakket in ligt
     parcel = db.query(models.Parcel).filter(
         models.Parcel.locker_id == locker_id,
-        models.Parcel.status.in_(["Delivered", "AwaitingCourier"]) # <--- GE-UPDATE REGEL
+        models.Parcel.status.in_(["Delivered", "AwaitingCourier"]),
     ).first()
 
     response = {
@@ -156,17 +183,15 @@ def get_locker_detail(locker_id: int, db: Session = Depends(get_db)) -> Any:
         "courier": None,
         "delivery_time": None,
         "resident_name": None,
-        "resident_unit": None
+        "resident_unit": None,
     }
 
-    # Vul pakket- en bewoner-info aan als de kluis in gebruik is
     if parcel:
         response["parcel_id"] = parcel.id
         response["parcel_status"] = parcel.status
         response["courier"] = parcel.courier
         response["delivery_time"] = parcel.created_at
-        
-        # Als er een gebruiker (bewoner) aan gekoppeld is, haal die ook op
+
         if parcel.user_id:
             user = db.query(models.User).filter(models.User.id == parcel.user_id).first()
             if user:
@@ -175,88 +200,99 @@ def get_locker_detail(locker_id: int, db: Session = Depends(get_db)) -> Any:
 
     return response
 
+
 @router.post(
-    "/walls", 
+    "/walls",
     response_model=schemas.WallDetailResponse,
-    summary="Nieuwe kluiswand aanmaken (inclusief configuratie)",
-    response_description="De aangemaakte muur inclusief alle geneste kluisjes."
+    summary="Create a new wall (with locker configuration)",
+    response_description="The created wall including all nested lockers.",
 )
 def create_wall(wall_data: schemas.WallCreateRequest, db: Session = Depends(get_db)) -> Any:
-    """
-    Maakt een nieuwe fysieke locatie (kluiswand) aan.
-    Koppelt direct alle kluisjes met hun juiste formaten en hardware-pinnen (door_number)
-    aan deze nieuwe muur.
+    """Create a new wall (location) with its lockers.
+
+    Generates a random 32-byte API key for the Raspberry Pi and bulk-inserts
+    all lockers with their sizes and door numbers.
+
+    Args:
+        wall_data: Wall name, address, and locker configuration.
+        db: SQLAlchemy session.
+
+    Returns:
+        The created wall with ``status: OFFLINE`` until the Pi boots.
     """
     import secrets
-    
-    # 1. Maak de nieuwe Locatie aan in de database
+
     new_location = models.Location(
         name=wall_data.name,
         address=wall_data.address,
-        api_key=secrets.token_urlsafe(32) # Genereer direct een veilige sleutel voor de Pi
+        api_key=secrets.token_urlsafe(32),
     )
     db.add(new_location)
     db.commit()
-    db.refresh(new_location) # Haal het nieuwe ID op (bijv. ID 35)
+    db.refresh(new_location)
 
-    # 2. Loop door de lijst met kluisjes die Angular meestuurde en voeg ze toe
     new_lockers = []
     for locker_in in wall_data.lockers:
         new_locker = models.Locker(
             location_id=new_location.id,
             door_number=locker_in.door_number,
             size=locker_in.size,
-            status="Available", # Een nieuwe muur is altijd leeg
-            shadow_state={}
+            status="Available",
+            shadow_state={},
         )
         new_lockers.append(new_locker)
-    
+
     db.bulk_save_objects(new_lockers)
     db.commit()
 
-    # 3. Haal de kluisjes opnieuw op om ze terug te sturen in de response
     saved_lockers = db.query(models.Locker).filter(models.Locker.location_id == new_location.id).all()
 
     return {
         "location_id": new_location.id,
         "name": new_location.name,
-        "status": "OFFLINE", # Een net aangemaakte muur is altijd offline tot de Pi opstart
+        "status": "OFFLINE",
         "last_sync": None,
-        "lockers": saved_lockers
+        "lockers": saved_lockers,
     }
 
+
 @router.delete(
-    "/walls/{wall_id}", 
-    summary="Kluiswand verwijderen",
-    response_description="Bevestiging van verwijdering."
+    "/walls/{wall_id}",
+    summary="Delete a wall",
+    response_description="Deletion confirmation.",
 )
 def delete_wall(wall_id: int, db: Session = Depends(get_db)) -> Any:
+    """Delete a wall and all its lockers.
+
+    Safety check: deletion is blocked if any locker is currently occupied.
+
+    Args:
+        wall_id: ID of the wall to delete.
+        db: SQLAlchemy session.
+
+    Returns:
+        Success message.
+
+    Raises:
+        HTTPException 400: If any locker is still occupied.
+        HTTPException 404: If the wall is not found.
     """
-    Verwijdert een fysieke locatie (kluiswand).
-    Veiligheidscheck: Kan alleen verwijderd worden als alle kluisjes leeg zijn.
-    """
-    # 1. Zoek de muur op
     loc = db.query(models.Location).filter(models.Location.id == wall_id).first()
     if not loc:
-        raise HTTPException(status_code=404, detail="Muur niet gevonden")
+        raise HTTPException(status_code=404, detail="Wall not found")
 
-    # 2. Veiligheidscheck: check of er nog bezette kluisjes zijn
     lockers = db.query(models.Locker).filter(models.Locker.location_id == wall_id).all()
     for locker in lockers:
         if locker.status == "Occupied":
             raise HTTPException(
-                status_code=400, 
-                detail=f"Kan muur niet verwijderen: kluis {locker.id} bevat nog een pakket."
+                status_code=400,
+                detail=f"Cannot delete wall: locker {locker.id} still contains a parcel.",
             )
 
-    # 3. Verwijder de muur
-    # Let op: dit vereist dat de relatie in models.py een cascade heeft, 
-    # bv: lockers = relationship("Locker", back_populates="location", cascade="all, delete-orphan")
-    # Mocht je dat niet hebben, dan kun je de kluisjes hier ook handmatig weggooien:
     for locker in lockers:
         db.delete(locker)
 
     db.delete(loc)
     db.commit()
 
-    return {"message": f"Muur '{loc.name}' succesvol verwijderd."}
+    return {"message": f"Wall '{loc.name}' deleted successfully."}

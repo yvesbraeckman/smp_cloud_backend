@@ -194,8 +194,8 @@ class TestExportLogs:
         lines = content.strip().split("\n")
         assert len(lines) >= 2  # Header + at least one log
         assert "ID" in lines[0]
-        assert "Tijdstip" in lines[0]
-        assert "Locatie" in lines[0]
+        assert "Timestamp" in lines[0]
+        assert "Location" in lines[0]
     
     def test_export_logs_with_filters(self, client, auth_headers, audit_log_info):
         """Test exporting logs with filters applied."""

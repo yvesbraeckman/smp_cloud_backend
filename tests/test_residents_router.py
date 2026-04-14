@@ -129,7 +129,7 @@ class TestCreateResident:
         # However, if Pydantic rejects it, we get 422
         assert response.status_code in [400, 422]  # Allow both outcomes
         if response.status_code == 400:
-            assert "al in gebruik" in response.json()["detail"].lower() or "e-mail" in response.json()["detail"].lower()
+            assert "already in use" in response.json()["detail"].lower() or "email" in response.json()["detail"].lower()
         # If 422, Pydantic rejected it for some reason (unlikely with valid email)
     
     def test_create_resident_invalid_email(self, client, auth_headers, location_a):
@@ -254,7 +254,7 @@ class TestGenerateCredentials:
         )
         
         assert response.status_code == 400
-        assert "geen pakketjes" in response.json()["detail"].lower() or "geen" in response.json()["detail"].lower()
+        assert "no parcels" in response.json()["detail"].lower()
     
     def test_generate_credentials_not_found(self, client, auth_headers):
         """Test generating credentials for non-existent resident."""
