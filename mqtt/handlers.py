@@ -337,11 +337,12 @@ def handle_pickup(client: mqtt.Client, location_id: str, payload: Dict[str, Any]
     try:
         print(f"[MQTT] Pickup: locker {locker_id} emptied via {method}.")
 
+        # NIEUWE CODE IN DE CLOUD (handle_pickup):
         parcel = db.query(models.Parcel).filter(
             models.Parcel.locker_id == locker_id,
-            models.Parcel.status == "Delivered",
+            models.Parcel.status.in_(["Delivered", "AwaitingCourier"]) # Checkt ze nu allebei!
         ).first()
-
+        
         user_name = "Unknown resident"
 
         if parcel:

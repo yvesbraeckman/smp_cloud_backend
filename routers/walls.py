@@ -60,8 +60,7 @@ def get_walls(
     for loc in locations:
         lockers = db.query(models.Locker).filter(models.Locker.location_id == loc.id).all()
         total_lockers = len(lockers)
-        occupied_lockers = sum(1 for l in lockers if l.status == "Occupied")
-
+        occupied_lockers = sum(1 for l in lockers if l.status in ["Occupied", "Return"])
         alarms = db.query(models.AuditLog).filter(
             models.AuditLog.locker_id.in_([l.id for l in lockers]),
             models.AuditLog.severity == "CRITICAL",
